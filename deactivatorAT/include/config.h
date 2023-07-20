@@ -19,9 +19,9 @@ typedef enum {
 
 #define UART_BAUDRATE 115200
 #define BUF_RX_SIZE 256
-#define TX_SIZE_KEEPALIVE 9*sizeof(char) 
-#define TX_SIZE_RESPONSE_OK 12*sizeof(char) 
-#define TX_SIZE_RESPONSE_ERR 13*sizeof(char) 
+#define TX_SIZE_KEEPALIVE 9 
+#define TX_SIZE_RESPONSE_OK 12 
+#define TX_SIZE_RESPONSE_ERR 13 
 #define TX_SIZE_MAX 16
 #define TX_MUTEX_WAIT 2000
 
@@ -33,6 +33,9 @@ typedef enum {
 #define PULSE_STOP 0x01
 #define AT_ERR 0x03
 #define PULSE_RESOLUTION 100 // 100ms
+
+#define NOTIFY true
+#define SILENT false
 
 const char* PATTERN_KEEP_ALIVE="AT+K=%02X\r\n";
 const char* PATTERN_OK="AT+OK=%02X%02X\r\n";

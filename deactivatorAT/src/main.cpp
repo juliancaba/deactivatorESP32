@@ -21,11 +21,13 @@ TaskHandle_t tHandler_KeepAlive = NULL;
 TaskHandle_t tHandler_AT = NULL;
 TaskHandle_t tHandler_Pulse = NULL;
 
-uint8_t* dataRX = NULL;
-char *msgPULSEStop = NULL;
-char *msgPULSE = NULL;//(char *)malloc(TX_SIZE_RESPONSE_OK);
-char *dataKA = NULL;//(char *)malloc(TX_SIZE_KEEPALIVE);
-char *msgTX = NULL;//(char *)malloc(TX_SIZE_RESPONSE_ERR);
+static volatile bool pulsePendingFlag;
+static volatile bool enable = false;
+
+static uint8_t* dataRX = NULL;
+static char *msgPULSE = NULL;
+static char *dataKA = NULL;
+static char *msgTX = NULL;
 
 static volatile uint8_t pdseq;
 static uint8_t pqseq;
@@ -37,7 +39,8 @@ static enum {stIDLE, stPLUSE_SIZE, stSEQ, stEQUAL, stPDSEQ_ACK, stPQSEQ_ACK, stC
 static tOperation operation = AT_NONE;
 
 void app_main(void);
-void createTasks(void);
+void stopPulse(bool notifyStop);
+void vTaskPulse(void* pvParam);
 
 void IRAM_ATTR en_handleInterrupt(void* arg)
 {
@@ -47,10 +50,10 @@ void IRAM_ATTR en_handleInterrupt(void* arg)
 }
 
 
-void transmitTX(const char *dataTX)
+void transmitTX(const char *dataTX, uint8_t size)
 {
   xSemaphoreTake(xMutexTX, TX_MUTEX_WAIT/portTICK_PERIOD_MS);
-  uart_write_bytes(UART_PORT, dataTX, strlen(dataTX));
+  uart_write_bytes(UART_PORT, dataTX, size);
   xSemaphoreGive( xMutexTX );
 }
 
@@ -59,21 +62,29 @@ static void vTaskEnable( void *pvParameters )
 {
   for( ;; ){
     xSemaphoreTake( sSemphrEnable, portMAX_DELAY );
+    printf("ENTRO\r\n");
 
-    if (gpio_get_level(pinSwitch) == HIGH){
+    if (!enable){
+      enable = true;
       gpio_set_level(pinLED_on, HIGH);
       gpio_set_level(pinLED_off, LOW);
-      //vTaskResume(tHandler_KeepAlive);
-      //vTaskResume(tHandler_AT);
-      //createTasks();
+      if(tHandler_KeepAlive != NULL)
+        vTaskResume(tHandler_KeepAlive);
+      if(tHandler_AT != NULL)
+        vTaskResume(tHandler_AT);
+      if(pulsePendingFlag && tHandler_Pulse == NULL){
+        //printf("[INFO] PULSE PENDING\r\n");
+        xTaskCreatePinnedToCore(vTaskPulse, "Task Pulse", 2000, NULL, 1, &tHandler_Pulse, 1);
+      }
     }
     else{
+      enable = false;
       gpio_set_level(pinLED_on, LOW);
       gpio_set_level(pinLED_off, HIGH);
-      //vTaskDelete(tHandler_KeepAlive);
-      //vTaskDelete(tHandler_AT);
-      //tHandler_AT = NULL;
-      //tHandler_KeepAlive = NULL;
+      vTaskSuspend(tHandler_KeepAlive);
+      vTaskSuspend(tHandler_AT);
+      if(tHandler_Pulse != NULL)
+        stopPulse(SILENT);
     }
   }
   vTaskDelete(NULL);
@@ -82,46 +93,46 @@ static void vTaskEnable( void *pvParameters )
 
 void vTaskPulse(void* pvParam)
 {
-  //char *msgPULSE = (char *)malloc(TX_SIZE_RESPONSE_OK);
-  //msgPULSE = (char *)malloc(TX_SIZE_RESPONSE_OK);
   for(;;) {
+    pulsePendingFlag = true;
+    msgPULSE = (char *)pvPortMalloc(TX_SIZE_MAX);
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
-    transmitTX((const char *) msgPULSE);
+    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
     gpio_set_level(pinPulse, HIGH);  
     vTaskDelay(pulse_size_ms/portTICK_PERIOD_MS);
     gpio_set_level(pinPulse, LOW);
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
-    transmitTX((const char *) msgPULSE);
+    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
+    pulsePendingFlag = false;
     tHandler_Pulse = NULL;
     vTaskDelete(NULL);
+    vPortFree(msgPULSE);
   }
-  //free(msgPULSE);
 }
 
-void stopPulse(void)
+
+void stopPulse(bool notifyStop)
 {
-  //char *msgPULSE2 = (char *)malloc(TX_SIZE_RESPONSE_OK);
-  //msgPULSE2 = (char *)malloc(TX_SIZE_RESPONSE_OK);
   gpio_set_level(pinPulse, LOW);
-  sprintf(msgPULSEStop, PATTERN_OK, pqseq, PULSE_STOP);
-  transmitTX((const char *) msgPULSEStop);
-  //tHandler_Pulse = NULL;
+  if(notifyStop){
+    sprintf(msgPULSE, PATTERN_OK, pqseq, PULSE_STOP);
+    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
+  }
   vTaskDelete(tHandler_Pulse);
   tHandler_Pulse = NULL;
-  //free(msgPULSE2);
+  vPortFree(msgPULSE);
 }
 
 
 void vTaskKeepAlive(void* pvParam)
 {
-  //char *dataKA = (char *)malloc(TX_SIZE_KEEPALIVE);
+  char *dataKA = (char *)pvPortMalloc(TX_SIZE_MAX);
   for(;;) {
-    dataKA = (char *)pvPortMalloc(TX_SIZE_KEEPALIVE);
     sprintf(dataKA, PATTERN_KEEP_ALIVE, pdseq);
-    transmitTX((const char *) dataKA);
+    transmitTX((const char *) dataKA, TX_SIZE_KEEPALIVE);
     vTaskDelay(KEEP_ALIVE_TIME/portTICK_PERIOD_MS);
   }
-  //free(dataKA);
+  vPortFree(dataKA);
   vTaskDelete(NULL);
 }
 
@@ -129,9 +140,8 @@ void vTaskKeepAlive(void* pvParam)
 void vTaskAT(void* pvParam)
 {
   int rxBytes;
-  //uint8_t* dataRX = (uint8_t*) malloc(8);
-  //char *msgTX = (char *)malloc(TX_SIZE_RESPONSE_ERR);
-  //msgTX = (char *)malloc(TX_SIZE_RESPONSE_ERR);
+  dataRX = (uint8_t*) pvPortMalloc(8);
+  msgTX = (char *)pvPortMalloc(TX_SIZE_MAX);
   for(;;) {
       switch (stateAT)
       {
@@ -164,7 +174,7 @@ void vTaskAT(void* pvParam)
       case stPLUSE_SIZE:
         rxBytes = uart_read_bytes(UART_PORT, dataRX, 2, 100 / portTICK_PERIOD_MS);
         if (rxBytes > 0) {
-          printf("[INFO] DATA %d %d\r\n", dataRX[0], dataRX[1]);
+          //printf("[INFO] DATA %d %d\r\n", dataRX[0], dataRX[1]);
           pulse_size_ms = (uint32_t)TO_UINT8(dataRX[0], dataRX[1]) * PULSE_RESOLUTION;
           stateAT = stSEQ;
         }
@@ -230,29 +240,30 @@ void vTaskAT(void* pvParam)
             switch (operation)
             {
             case AT_ERROR:
-              printf("[INFO] ERROR\r\n");
+              //printf("[INFO] ERROR\r\n");
               sprintf(msgTX, PATTERN_ERR, pqseq, AT_ERR);
-              transmitTX((const char *) msgTX);
+              transmitTX((const char *) msgTX, TX_SIZE_RESPONSE_ERR);
               break;
 
             case AT_ACTIVATE:
-              printf("[INFO] ACTIVATE %d %d\r\n", pulse_size_ms, pqseq);
+              //printf("[INFO] ACTIVATE %d %d\r\n", pulse_size_ms, pqseq);
               if (tHandler_Pulse == NULL)
                 xTaskCreatePinnedToCore(vTaskPulse, "Task Pulse", 2000, NULL, 1, &tHandler_Pulse, 1);
               else{
                 sprintf(msgTX, PATTERN_ERR, pqseq, PULSE_ERR);
-                transmitTX((const char *) msgTX);
+                transmitTX((const char *) msgTX, TX_SIZE_RESPONSE_ERR);
               }
               break;
 
             case AT_STOP:
-              printf("[INFO] STOP %d\r\n", pqseq);
+              //printf("[INFO] STOP %d\r\n", pqseq);
               if (tHandler_Pulse == NULL){
                 sprintf(msgTX, PATTERN_OK, pqseq, PULSE_NONE);
-                transmitTX((const char *) msgTX);
+                transmitTX((const char *) msgTX, TX_SIZE_RESPONSE_OK);
               }
               else{
-                stopPulse();
+                stopPulse(NOTIFY);
+                pulsePendingFlag = false;
               }
               break;
 
@@ -273,8 +284,8 @@ void vTaskAT(void* pvParam)
       }
     }    
   }
-  //free(dataRX);
-  //free(msgTX);
+  vPortFree(dataRX);
+  vPortFree(msgTX);
   vTaskDelete(NULL);
 }
 
@@ -284,7 +295,7 @@ void setup()
 {
   gpio_set_direction(pinSwitch, GPIO_MODE_INPUT);
   gpio_pulldown_dis(pinSwitch);
-  gpio_set_intr_type(pinSwitch, GPIO_INTR_ANYEDGE);
+  gpio_set_intr_type(pinSwitch, GPIO_INTR_POSEDGE);
   gpio_install_isr_service(0);
   gpio_isr_handler_add(pinSwitch, en_handleInterrupt, (void*)pinSwitch);
 
@@ -319,13 +330,7 @@ void setup()
   gpio_set_level(pinPulse, LOW);
 
   pdseq = 0;
-
-  // FreeRTOS-ESP32 uses heap_1 so free is not allowed
-  dataRX = (uint8_t*) malloc(8);
-  msgPULSEStop = (char *)malloc(TX_SIZE_RESPONSE_OK);
-  msgPULSE = (char *)malloc(TX_SIZE_RESPONSE_OK);
-  dataKA = (char *)malloc(TX_SIZE_KEEPALIVE);
-  msgTX = (char *)malloc(TX_SIZE_RESPONSE_ERR);
+  pulsePendingFlag = false;
 
   app_main();
 }
@@ -351,15 +356,10 @@ void app_main(void)
   }
 
   xTaskCreatePinnedToCore(vTaskEnable, "Task Enable", 2500, NULL, 10, NULL, 0);
-  createTasks();
-
-}
-
-void createTasks(void)
-{
   xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 5000, NULL, 2, &tHandler_KeepAlive, 0);
   xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
 }
+
 
 void loop() {
   // put your main code here, to run repeatedly:
