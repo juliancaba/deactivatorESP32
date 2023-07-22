@@ -3,12 +3,13 @@
 
 
 // GPIO
-#define pinPulse GPIO_NUM_5        // GPIO5 (34 - D10)
-#define pinSwitch  GPIO_NUM_23     // GPIO23 (36 - D11)
-#define pinLED_off GPIO_NUM_27     // GPIO27 (16 - D6)
-#define pinLED_on GPIO_NUM_14      // GPIO14 (17 - D7)
-#define pinLED_USB_ok GPIO_NUM_13  // GPIO13 (20 - D9)
-#define pinLED_USB_err GPIO_NUM_12 // GPIO12 (18 - D8)
+#define pinPulse         GPIO_NUM_5  // GPIO5  (34 - D10)
+#define pinBUTTON_PULSE  GPIO_NUM_23 // GPIO23 (36 - D11)
+#define pinBUTTON_MODE   GPIO_NUM_19 // GPIO23 (36 - D11)
+#define pinLED_STATUS_R  GPIO_NUM_27 // GPIO27 (16 - D6)
+#define pinLED_STATUS_G  GPIO_NUM_14 // GPIO14 (17 - D7)
+#define pinLED_MODE_G    GPIO_NUM_13 // GPIO13 (20 - D9)
+#define pinLED_MODE_R    GPIO_NUM_12 // GPIO12 (18 - D8)
 
 // UART 2
 #define UART_PORT 2

@@ -66,8 +66,8 @@ static void vTaskEnable( void *pvParameters )
 
     if (!enable){
       enable = true;
-      gpio_set_level(pinLED_on, HIGH);
-      gpio_set_level(pinLED_off, LOW);
+      gpio_set_level(pinLED_STATUS_G, HIGH);
+      gpio_set_level(pinLED_STATUS_R, LOW);
       if(tHandler_KeepAlive != NULL)
         vTaskResume(tHandler_KeepAlive);
       if(tHandler_AT != NULL)
@@ -79,8 +79,8 @@ static void vTaskEnable( void *pvParameters )
     }
     else{
       enable = false;
-      gpio_set_level(pinLED_on, LOW);
-      gpio_set_level(pinLED_off, HIGH);
+      gpio_set_level(pinLED_STATUS_G, LOW);
+      gpio_set_level(pinLED_STATUS_R, HIGH);
       vTaskSuspend(tHandler_KeepAlive);
       vTaskSuspend(tHandler_AT);
       if(tHandler_Pulse != NULL)
@@ -293,16 +293,16 @@ void vTaskAT(void* pvParam)
 
 void setup() 
 {
-  gpio_set_direction(pinSwitch, GPIO_MODE_INPUT);
-  gpio_pulldown_dis(pinSwitch);
-  gpio_set_intr_type(pinSwitch, GPIO_INTR_POSEDGE);
+  gpio_set_direction(pinBUTTON_PULSE, GPIO_MODE_INPUT);
+  gpio_pulldown_dis(pinBUTTON_PULSE);
+  gpio_set_intr_type(pinBUTTON_PULSE, GPIO_INTR_POSEDGE);
   gpio_install_isr_service(0);
-  gpio_isr_handler_add(pinSwitch, en_handleInterrupt, (void*)pinSwitch);
+  gpio_isr_handler_add(pinBUTTON_PULSE, en_handleInterrupt, (void*)pinBUTTON_PULSE);
 
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_DISABLE;
   io_conf.mode = GPIO_MODE_OUTPUT;
-  io_conf.pin_bit_mask = ((1ULL<<pinLED_off) | (1ULL<<pinLED_on) | (1ULL<<pinLED_USB_ok) | (1ULL<<pinLED_USB_err) | (1ULL<<pinPulse));
+  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R) | (1ULL<<pinPulse));
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
@@ -323,10 +323,10 @@ void setup()
   uart_set_pin(UART_PORT, pinUART_TX, pinUART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
 
-  gpio_set_level(pinLED_on, LOW);  
-  gpio_set_level(pinLED_off, LOW);
-  gpio_set_level(pinLED_USB_ok, LOW);
-  gpio_set_level(pinLED_USB_err, LOW);
+  gpio_set_level(pinLED_STATUS_G, LOW);  
+  gpio_set_level(pinLED_STATUS_R, LOW);
+  gpio_set_level(pinLED_MODE_G, LOW);
+  gpio_set_level(pinLED_MODE_R, LOW);
   gpio_set_level(pinPulse, LOW);
 
   pdseq = 0;
