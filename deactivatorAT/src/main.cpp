@@ -4,7 +4,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <EEPROM.h>
+
 #include "driver/uart.h"
+#include "driver/ledc.h"
 
 #include "pinout.h"
 #include "config.h"
@@ -14,15 +17,18 @@
 #include "freertos/semphr.h"
 
 
-QueueHandle_t sSemphrEnable = NULL;
+QueueHandle_t sSemphrMode = NULL;
+QueueHandle_t sSemphrPulse = NULL;
 QueueHandle_t xMutexTX = NULL;
+QueueHandle_t xMutexPulse = NULL;
 
 TaskHandle_t tHandler_KeepAlive = NULL;
 TaskHandle_t tHandler_AT = NULL;
 TaskHandle_t tHandler_Pulse = NULL;
+TaskHandle_t tHandler_ManualPulse = NULL;
 
-static volatile bool pulsePendingFlag;
-static volatile bool enable = false;
+//static volatile bool pulsePendingFlag;
+static volatile bool modeUSB = false;
 
 static uint8_t* dataRX = NULL;
 static char *msgPULSE = NULL;
@@ -42,13 +48,28 @@ void app_main(void);
 void stopPulse(bool notifyStop);
 void vTaskPulse(void* pvParam);
 
-void IRAM_ATTR en_handleInterrupt(void* arg)
+void IRAM_ATTR mode_handleInterrupt(void* arg)
 {
   static portBASE_TYPE xHigherPriorityTaskWoken;
   xHigherPriorityTaskWoken = pdFALSE;
-  xSemaphoreGiveFromISR( sSemphrEnable, &xHigherPriorityTaskWoken );
+  xSemaphoreGiveFromISR( sSemphrMode, &xHigherPriorityTaskWoken );
 }
 
+void IRAM_ATTR pulse_handleInterrupt(void* arg)
+{
+  static portBASE_TYPE xHigherPriorityTaskWoken;
+  xHigherPriorityTaskWoken = pdFALSE;
+  xSemaphoreGiveFromISR( sSemphrPulse, &xHigherPriorityTaskWoken );
+}
+
+/*
+void IRAM_ATTR ledcEvent()
+{
+
+    printf("ENTRO LEDC\r\n");
+  ledcWrite(PWM_CHANNEL, 0);
+}
+*/
 
 void transmitTX(const char *dataTX, uint8_t size)
 {
@@ -58,43 +79,58 @@ void transmitTX(const char *dataTX, uint8_t size)
 }
 
 
-static void vTaskEnable( void *pvParameters )
+static void vTaskManualPulse( void *pvParameters )
 {
   for( ;; ){
-    xSemaphoreTake( sSemphrEnable, portMAX_DELAY );
-    printf("ENTRO\r\n");
-
-    if (!enable){
-      enable = true;
-      gpio_set_level(pinLED_STATUS_G, HIGH);
-      gpio_set_level(pinLED_STATUS_R, LOW);
-      if(tHandler_KeepAlive != NULL)
-        vTaskResume(tHandler_KeepAlive);
-      if(tHandler_AT != NULL)
-        vTaskResume(tHandler_AT);
-      if(pulsePendingFlag && tHandler_Pulse == NULL){
-        //printf("[INFO] PULSE PENDING\r\n");
-        xTaskCreatePinnedToCore(vTaskPulse, "Task Pulse", 2000, NULL, 1, &tHandler_Pulse, 1);
-      }
-    }
-    else{
-      enable = false;
-      gpio_set_level(pinLED_STATUS_G, LOW);
-      gpio_set_level(pinLED_STATUS_R, HIGH);
-      vTaskSuspend(tHandler_KeepAlive);
-      vTaskSuspend(tHandler_AT);
-      if(tHandler_Pulse != NULL)
-        stopPulse(SILENT);
-    }
+    xSemaphoreTake( sSemphrPulse, portMAX_DELAY );
+    printf("[INFO] Pulso Manual\r\n");
   }
   vTaskDelete(NULL);
 }
 
 
+static void vTaskMode( void *pvParameters )
+{
+  for( ;; ){
+    xSemaphoreTake( sSemphrMode, portMAX_DELAY );
+    if (!modeUSB){
+      modeUSB = true;
+      gpio_set_level(pinLED_STATUS_G, HIGH);
+      gpio_set_level(pinLED_STATUS_R, LOW);
+      gpio_set_level(pinLED_MODE_G, HIGH);
+      gpio_set_level(pinLED_MODE_R, LOW);
+      if(tHandler_KeepAlive != NULL)
+        vTaskResume(tHandler_KeepAlive);
+      if(tHandler_AT != NULL)
+        vTaskResume(tHandler_AT);
+      if(tHandler_ManualPulse != NULL)
+        vTaskResume(tHandler_ManualPulse);
+      printf("[INFO] USB Mode (on)\r\n");
+    }
+    else{
+      modeUSB = false;
+      gpio_set_level(pinLED_STATUS_G, LOW);
+      gpio_set_level(pinLED_STATUS_R, HIGH);
+      gpio_set_level(pinLED_MODE_G, LOW);
+      gpio_set_level(pinLED_MODE_R, LOW);
+
+      vTaskSuspend(tHandler_KeepAlive);
+      vTaskSuspend(tHandler_AT);
+      vTaskSuspend(tHandler_ManualPulse);
+      if(tHandler_Pulse != NULL)
+        stopPulse(SILENT);
+
+      printf("[INFO] USB Mode (off)\r\n");
+    }
+  }
+  vTaskDelete(NULL);
+}
+
+/*
 void vTaskPulse(void* pvParam)
 {
   for(;;) {
-    pulsePendingFlag = true;
+    //pulsePendingFlag = true;
     msgPULSE = (char *)pvPortMalloc(TX_SIZE_MAX);
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
@@ -103,7 +139,25 @@ void vTaskPulse(void* pvParam)
     gpio_set_level(pinPulse, LOW);
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
-    pulsePendingFlag = false;
+    //pulsePendingFlag = false;
+    tHandler_Pulse = NULL;
+    vTaskDelete(NULL);
+    vPortFree(msgPULSE);
+  }
+}
+*/
+
+void vTaskPulse(void* pvParam)
+{
+  for(;;) {
+    msgPULSE = (char *)pvPortMalloc(TX_SIZE_MAX);
+    sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
+    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
+    gpio_set_level(pinPulse, HIGH);  
+    vTaskDelay(pulse_size_ms/portTICK_PERIOD_MS);
+    gpio_set_level(pinPulse, LOW);
+    sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
+    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
     tHandler_Pulse = NULL;
     vTaskDelete(NULL);
     vPortFree(msgPULSE);
@@ -176,6 +230,7 @@ void vTaskAT(void* pvParam)
         if (rxBytes > 0) {
           //printf("[INFO] DATA %d %d\r\n", dataRX[0], dataRX[1]);
           pulse_size_ms = (uint32_t)TO_UINT8(dataRX[0], dataRX[1]) * PULSE_RESOLUTION;
+          EEPROM.put(ADDR_EEPROM_PULSE, pulse_size_ms);
           stateAT = stSEQ;
         }
         break;
@@ -263,7 +318,7 @@ void vTaskAT(void* pvParam)
               }
               else{
                 stopPulse(NOTIFY);
-                pulsePendingFlag = false;
+                // pulsePendingFlag = false;
               }
               break;
 
@@ -296,13 +351,19 @@ void setup()
   gpio_set_direction(pinBUTTON_PULSE, GPIO_MODE_INPUT);
   gpio_pulldown_dis(pinBUTTON_PULSE);
   gpio_set_intr_type(pinBUTTON_PULSE, GPIO_INTR_POSEDGE);
+
+  gpio_set_direction(pinBUTTON_MODE, GPIO_MODE_INPUT);
+  gpio_pulldown_dis(pinBUTTON_MODE);
+  gpio_set_intr_type(pinBUTTON_MODE, GPIO_INTR_POSEDGE);
+
   gpio_install_isr_service(0);
-  gpio_isr_handler_add(pinBUTTON_PULSE, en_handleInterrupt, (void*)pinBUTTON_PULSE);
+  gpio_isr_handler_add(pinBUTTON_PULSE, pulse_handleInterrupt, (void*)pinBUTTON_PULSE);
+  gpio_isr_handler_add(pinBUTTON_MODE, mode_handleInterrupt, (void*)pinBUTTON_MODE);
 
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_DISABLE;
   io_conf.mode = GPIO_MODE_OUTPUT;
-  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R) | (1ULL<<pinPulse));
+  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R));
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
@@ -322,6 +383,9 @@ void setup()
   uart_param_config(UART_PORT, &uart_config);
   uart_set_pin(UART_PORT, pinUART_TX, pinUART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
+  //ledcAttachPin(pinPulse, PWM_CHANNEL);
+  //ledcSetup(PWM_CHANNEL, 10, 8); // 10 Hz PWM (100ms), 8-bit resolution
+  //attachInterrupt(digitalPinToInterrupt(pinPulse), ledcEvent, FALLING);
 
   gpio_set_level(pinLED_STATUS_G, LOW);  
   gpio_set_level(pinLED_STATUS_R, LOW);
@@ -330,7 +394,9 @@ void setup()
   gpio_set_level(pinPulse, LOW);
 
   pdseq = 0;
-  pulsePendingFlag = false;
+  EEPROM.get(ADDR_EEPROM_PULSE, pulse_size_ms);
+
+//  ledcWrite(PWM_CHANNEL, 128);
 
   app_main();
 }
@@ -341,10 +407,17 @@ void app_main(void)
   if(xTaskGetSchedulerState()==taskSCHEDULER_RUNNING)
     printf("[INFO] Scheduler is running\n");
 
-  vSemaphoreCreateBinary( sSemphrEnable );
-  if( sSemphrEnable == NULL )
+  vSemaphoreCreateBinary( sSemphrMode );
+  if( sSemphrMode == NULL )
   {
-    printf("[FAIL] Enable Semaphore has not been created\n");
+    printf("[FAIL] Mode Semaphore has not been created\n");
+    return;
+  }
+
+  vSemaphoreCreateBinary( sSemphrPulse );
+  if( sSemphrPulse == NULL )
+  {
+    printf("[FAIL] Pulse Semaphore has not been created\n");
     return;
   }
 
@@ -355,8 +428,9 @@ void app_main(void)
     return;
   }
 
-  xTaskCreatePinnedToCore(vTaskEnable, "Task Enable", 2500, NULL, 10, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 5000, NULL, 2, &tHandler_KeepAlive, 0);
+  xTaskCreatePinnedToCore(vTaskMode, "Task Mode", 2500, NULL, 10, NULL, 0);
+  xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 2500, NULL, 1, &tHandler_ManualPulse, 0);
+  xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 2500, NULL, 2, &tHandler_KeepAlive, 0);
   xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
 }
 

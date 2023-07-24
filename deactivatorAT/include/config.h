@@ -37,6 +37,16 @@ typedef enum {
 #define NOTIFY true
 #define SILENT false
 
+#define ADDR_EEPROM_PULSE 0x0
+
+#define PWM_CHANNEL 1
+#define LEDC_TIMER              LEDC_TIMER_0
+#define LEDC_MODE               LEDC_LOW_SPEED_MODE
+#define LEDC_CHANNEL            LEDC_CHANNEL_0
+#define LEDC_DUTY_RES           LEDC_TIMER_16_BIT // Set duty resolution to 16 bits
+#define LEDC_DUTY               (32767) // Set duty to 50%. ((2 ** 16) - 1) * 50%
+#define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
+
 const char* PATTERN_KEEP_ALIVE="AT+K=%02X\r\n";
 const char* PATTERN_OK="AT+OK=%02X%02X\r\n";
 const char* PATTERN_ERR="AT+ERR=%02X%02X\r\n";
