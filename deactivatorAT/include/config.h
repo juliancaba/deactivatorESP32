@@ -32,7 +32,9 @@ typedef enum {
 #define PULSE_NONE 0x00
 #define PULSE_STOP 0x01
 #define AT_ERR 0x03
-#define PULSE_RESOLUTION 100 // 100ms
+#define PULSE_RESOLUTION   100 // 100ms
+#define PULSE_MANUAL_MS    2000 // 2s
+#define PULSE_PERIOD_TICKS 10 // Pulse_Duration * PERIOD_TICKS
 
 #define NOTIFY true
 #define SILENT false

@@ -7,7 +7,7 @@
 #include <EEPROM.h>
 
 #include "driver/uart.h"
-#include "driver/ledc.h"
+#include "driver/timer.h"
 
 #include "pinout.h"
 #include "config.h"
@@ -27,7 +27,7 @@ TaskHandle_t tHandler_AT = NULL;
 TaskHandle_t tHandler_Pulse = NULL;
 TaskHandle_t tHandler_ManualPulse = NULL;
 
-//static volatile bool pulsePendingFlag;
+
 static volatile bool modeUSB = false;
 
 static uint8_t* dataRX = NULL;
@@ -41,12 +41,15 @@ static uint8_t pdseq_ack;
 static uint8_t pqseq_ack;
 static uint16_t pulse_size_ms;
 static uint8_t pulse_pqseq;
+static uint16_t pulse_num = 1;
+static volatile uint16_t pulse_cnt;
 static enum {stIDLE, stPLUSE_SIZE, stSEQ, stEQUAL, stPDSEQ_ACK, stPQSEQ_ACK, stCR, stLF} stateAT;
 static tOperation operation = AT_NONE;
 
 void app_main(void);
 void stopPulse(bool notifyStop);
 void vTaskPulse(void* pvParam);
+
 
 void IRAM_ATTR mode_handleInterrupt(void* arg)
 {
@@ -55,6 +58,7 @@ void IRAM_ATTR mode_handleInterrupt(void* arg)
   xSemaphoreGiveFromISR( sSemphrMode, &xHigherPriorityTaskWoken );
 }
 
+
 void IRAM_ATTR pulse_handleInterrupt(void* arg)
 {
   static portBASE_TYPE xHigherPriorityTaskWoken;
@@ -62,14 +66,24 @@ void IRAM_ATTR pulse_handleInterrupt(void* arg)
   xSemaphoreGiveFromISR( sSemphrPulse, &xHigherPriorityTaskWoken );
 }
 
-/*
-void IRAM_ATTR ledcEvent()
-{
 
-    printf("ENTRO LEDC\r\n");
-  ledcWrite(PWM_CHANNEL, 0);
+void IRAM_ATTR timeout_handler(void *para)
+{
+  TIMERG0.int_clr_timers.t0 = 1;
+
+  if (pulse_num >= pulse_cnt){
+    if(gpio_get_level(pinPulse) == HIGH){
+      gpio_set_level(pinPulse, LOW);
+    }
+    else{
+      gpio_set_level(pinPulse, HIGH);
+    }
+    pulse_cnt++;
+    timer_set_alarm(TIMER_GROUP_0, TIMER_0, TIMER_ALARM_EN);
+  }
+  //TIMERG0.hw_timer[0].config.alarm_en = 1;
 }
-*/
+
 
 void transmitTX(const char *dataTX, uint8_t size)
 {
@@ -79,11 +93,32 @@ void transmitTX(const char *dataTX, uint8_t size)
 }
 
 
+void generatePulse(int pulseHigh_ms)
+{
+  timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+  timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, pulseHigh_ms*PULSE_PERIOD_TICKS);
+  
+  pulse_cnt=0;
+
+  gpio_set_level(pinPulse, HIGH);
+  timer_start(TIMER_GROUP_0, TIMER_0);
+
+  while(pulse_cnt!=pulse_num);
+
+  gpio_set_level(pinPulse, LOW);
+  timer_pause(TIMER_GROUP_0, TIMER_0);
+}
+
+
 static void vTaskManualPulse( void *pvParameters )
 {
   for( ;; ){
     xSemaphoreTake( sSemphrPulse, portMAX_DELAY );
     printf("[INFO] Pulso Manual\r\n");
+
+    xSemaphoreTake(xMutexPulse, portMAX_DELAY);
+    generatePulse(PULSE_MANUAL_MS);
+    xSemaphoreGive( xMutexPulse );
   }
   vTaskDelete(NULL);
 }
@@ -126,38 +161,23 @@ static void vTaskMode( void *pvParameters )
   vTaskDelete(NULL);
 }
 
-/*
-void vTaskPulse(void* pvParam)
-{
-  for(;;) {
-    //pulsePendingFlag = true;
-    msgPULSE = (char *)pvPortMalloc(TX_SIZE_MAX);
-    sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
-    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
-    gpio_set_level(pinPulse, HIGH);  
-    vTaskDelay(pulse_size_ms/portTICK_PERIOD_MS);
-    gpio_set_level(pinPulse, LOW);
-    sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
-    transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
-    //pulsePendingFlag = false;
-    tHandler_Pulse = NULL;
-    vTaskDelete(NULL);
-    vPortFree(msgPULSE);
-  }
-}
-*/
 
 void vTaskPulse(void* pvParam)
 {
   for(;;) {
+    xSemaphoreTake(xMutexPulse, portMAX_DELAY);
+
     msgPULSE = (char *)pvPortMalloc(TX_SIZE_MAX);
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
-    gpio_set_level(pinPulse, HIGH);  
-    vTaskDelay(pulse_size_ms/portTICK_PERIOD_MS);
-    gpio_set_level(pinPulse, LOW);
+    
+    generatePulse(pulse_size_ms);
+    
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
+
+    xSemaphoreGive( xMutexPulse );
+
     tHandler_Pulse = NULL;
     vTaskDelete(NULL);
     vPortFree(msgPULSE);
@@ -167,11 +187,16 @@ void vTaskPulse(void* pvParam)
 
 void stopPulse(bool notifyStop)
 {
+  //pulse_cnt=pulse_num-1;
+  //while(pulse_cnt!=pulse_num);
+  //timer_pause(TIMER_GROUP_0, TIMER_0);
   gpio_set_level(pinPulse, LOW);
+  timer_pause(TIMER_GROUP_0, TIMER_0);
   if(notifyStop){
     sprintf(msgPULSE, PATTERN_OK, pqseq, PULSE_STOP);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
   }
+  xSemaphoreGive( xMutexPulse );
   vTaskDelete(tHandler_Pulse);
   tHandler_Pulse = NULL;
   vPortFree(msgPULSE);
@@ -228,7 +253,6 @@ void vTaskAT(void* pvParam)
       case stPLUSE_SIZE:
         rxBytes = uart_read_bytes(UART_PORT, dataRX, 2, 100 / portTICK_PERIOD_MS);
         if (rxBytes > 0) {
-          //printf("[INFO] DATA %d %d\r\n", dataRX[0], dataRX[1]);
           pulse_size_ms = (uint32_t)TO_UINT8(dataRX[0], dataRX[1]) * PULSE_RESOLUTION;
           EEPROM.put(ADDR_EEPROM_PULSE, pulse_size_ms);
           stateAT = stSEQ;
@@ -318,7 +342,6 @@ void vTaskAT(void* pvParam)
               }
               else{
                 stopPulse(NOTIFY);
-                // pulsePendingFlag = false;
               }
               break;
 
@@ -363,12 +386,11 @@ void setup()
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_DISABLE;
   io_conf.mode = GPIO_MODE_OUTPUT;
-  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R));
+  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R) | (1ULL<<pinPulse));
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
  
-
   uart_config_t uart_config = {
         .baud_rate = UART_BAUDRATE,
         .data_bits = UART_DATA_8_BITS,
@@ -382,10 +404,19 @@ void setup()
   uart_driver_install(UART_PORT, BUF_RX_SIZE * 2, 0, 0, NULL, intr_alloc_flags);
   uart_param_config(UART_PORT, &uart_config);
   uart_set_pin(UART_PORT, pinUART_TX, pinUART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  
+  timer_config_t config; 
+  config.alarm_en = TIMER_ALARM_EN; 
+  config.counter_en = TIMER_PAUSE; 
+  config.intr_type = TIMER_INTR_LEVEL;
+  config.counter_dir = TIMER_COUNT_UP; 
+  config.auto_reload = TIMER_AUTORELOAD_EN; 
+  config.divider = 8000; 
+  
+  timer_init(TIMER_GROUP_0,TIMER_0,&config);
 
-  //ledcAttachPin(pinPulse, PWM_CHANNEL);
-  //ledcSetup(PWM_CHANNEL, 10, 8); // 10 Hz PWM (100ms), 8-bit resolution
-  //attachInterrupt(digitalPinToInterrupt(pinPulse), ledcEvent, FALLING);
+  timer_isr_register(TIMER_GROUP_0, TIMER_0, timeout_handler,
+                       (void *) TIMER_0, ESP_INTR_FLAG_IRAM, NULL);
 
   gpio_set_level(pinLED_STATUS_G, LOW);  
   gpio_set_level(pinLED_STATUS_R, LOW);
@@ -395,8 +426,6 @@ void setup()
 
   pdseq = 0;
   EEPROM.get(ADDR_EEPROM_PULSE, pulse_size_ms);
-
-//  ledcWrite(PWM_CHANNEL, 128);
 
   app_main();
 }
@@ -428,8 +457,16 @@ void app_main(void)
     return;
   }
 
+  //vSemaphoreCreateBinary(xMutexPulse);
+  xMutexPulse = xSemaphoreCreateMutex();
+  if( xMutexPulse == NULL )
+  {
+    printf("[FAIL] Pulse Mutex has not been created\n");
+    return;
+  }
+
   xTaskCreatePinnedToCore(vTaskMode, "Task Mode", 2500, NULL, 10, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 2500, NULL, 1, &tHandler_ManualPulse, 0);
+  xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 5000, NULL, 1, &tHandler_ManualPulse, 0);
   xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 2500, NULL, 2, &tHandler_KeepAlive, 0);
   xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
 }

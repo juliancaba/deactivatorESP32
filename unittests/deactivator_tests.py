@@ -129,6 +129,20 @@ class DeactivatorESP32TestCase(unittest.TestCase):
         self.assertEqual(int(keep_alive_init,16)+1, int(keep_alive_end,16), "Wrong Keep Alive after AT command")
 
         
+    def test_short_pulse(self):
+        keep_alive_init = self._serial.read(9)[5:7]
+        at_cmd = "AT+A=02{:02x}\r\n".format(21)
+        self._serial.flushOutput()
+        self._serial.write(bytearray(at_cmd.encode('utf-8')))
+        init_msg = self._serial.read(12)
+        keep_alive_end = self._serial.read(9)[5:7]
+                
+        self.assertEqual(init_msg, b'AT+OK=1501\r\n', "Wrong init msg")
+        print(init_msg)
+        print("KA1: {}  KA+1: {}".format(keep_alive_init, keep_alive_end))
+        self.assertEqual(int(keep_alive_init,16)+1, int(keep_alive_end,16), "Wrong Keep Alive after AT command")
+
+        
 
 def suite():
     suite = unittest.TestSuite()
