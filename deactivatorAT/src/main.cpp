@@ -457,8 +457,8 @@ void app_main(void)
     return;
   }
 
-  //vSemaphoreCreateBinary(xMutexPulse);
-  xMutexPulse = xSemaphoreCreateMutex();
+  vSemaphoreCreateBinary(xMutexPulse);
+  //xMutexPulse = xSemaphoreCreateMutex();
   if( xMutexPulse == NULL )
   {
     printf("[FAIL] Pulse Mutex has not been created\n");

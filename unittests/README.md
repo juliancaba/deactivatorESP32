@@ -2,10 +2,10 @@
 
 * To run all tests
 ```
-python deactivator_tests.py
+python deactivatorAT_tests.py
 ```
 
 * To run a test
 ```
-python -m unittest deactivator_tests.DeactivatorESP32TestCase.test_long_pulse
+python -m unittest deactivatorAT_tests.DeactivatorESP32TestCase.test_long_pulse
 ```
