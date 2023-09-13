@@ -16,6 +16,12 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
+#include "serverConfig.h"
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+
+
 
 QueueHandle_t sSemphrMode = NULL;
 QueueHandle_t sSemphrPulse = NULL;
@@ -26,8 +32,11 @@ TaskHandle_t tHandler_KeepAlive = NULL;
 TaskHandle_t tHandler_AT = NULL;
 TaskHandle_t tHandler_Pulse = NULL;
 TaskHandle_t tHandler_ManualPulse = NULL;
+TaskHandle_t tHandler_Server = NULL;
+TaskHandle_t tHandler_ServerWdg = NULL;
 
 
+AsyncWebServer server(80);
 static volatile bool modeUSB = false;
 
 static uint8_t* dataRX = NULL;
@@ -40,8 +49,10 @@ static uint8_t pqseq;
 static uint8_t pdseq_ack;
 static uint8_t pqseq_ack;
 static uint16_t pulse_size_ms;
+static uint16_t pause_size_ms;
 static uint8_t pulse_pqseq;
 static uint16_t pulse_num = 1;
+static uint16_t start_pulse = 0;
 static volatile uint16_t pulse_cnt;
 static enum {stIDLE, stPLUSE_SIZE, stSEQ, stEQUAL, stPDSEQ_ACK, stPQSEQ_ACK, stCR, stLF} stateAT;
 static tOperation operation = AT_NONE;
@@ -49,6 +60,108 @@ static tOperation operation = AT_NONE;
 void app_main(void);
 void stopPulse(bool notifyStop);
 void vTaskPulse(void* pvParam);
+
+
+
+void wifiConnect()
+{
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    printf("Connecting to WiFi..\r\n");
+  }
+
+  printf("Connected to the WiFi network\r\n");
+  printf("IP Address: %s\r\n", WiFi.localIP().toString());
+}
+
+
+void wifiDisconnect()
+{
+  WiFi.disconnect();
+  
+  while (WiFi.status() != WL_DISCONNECTED) {
+    delay(1000);
+    printf("Disconnecting to WiFi..\r\n");
+  }
+
+  printf("Disonnected to the WiFi network\r\n");
+}
+
+
+void notFound(AsyncWebServerRequest *request) 
+{
+  request->send(404, "text/plain", "Not found");
+}
+
+
+String toString(uint16_t var)
+{
+  char int_str[4];
+  sprintf(int_str, "%d", var);
+  return int_str;
+}
+
+
+String processor(const String& var)
+{
+  if(var == "pulse_size_ms"){
+    EEPROM.get(ADDR_EEPROM_PULSE, pulse_size_ms);
+    return toString(pulse_size_ms);
+  }
+  else if(var == "pause_size_ms"){
+    EEPROM.get(ADDR_EEPROM_PAUSE, pause_size_ms);
+    return toString(pause_size_ms);
+  }
+  else if(var == "pulse_num"){
+    EEPROM.get(ADDR_EEPROM_NUMPULSES, pulse_num);
+    return toString(pulse_num);
+  }
+  else if(var == "start_pulse"){
+    EEPROM.get(ADDR_EEPROM_START, start_pulse);
+    return toString(start_pulse);
+  }
+  return String();
+}
+
+
+
+void startServer()
+{
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  server.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    String inputMessage;
+
+    if (request->hasParam(parameter_durPulso)) {
+      inputMessage = request->getParam(parameter_durPulso)->value();
+      EEPROM.writeUInt(ADDR_EEPROM_PULSE, inputMessage.toInt());
+    }
+
+    else if (request->hasParam(parameter_durPausa)) {
+      inputMessage = request->getParam(parameter_durPausa)->value();
+      EEPROM.writeUInt(ADDR_EEPROM_PAUSE, inputMessage.toInt());
+    }
+    else if (request->hasParam(parameter_NumPulsos)) {
+      inputMessage = request->getParam(parameter_NumPulsos)->value();
+      EEPROM.writeUInt(ADDR_EEPROM_NUMPULSES, inputMessage.toInt());
+    }
+    else if (request->hasParam(parameter_StartPulsos)) {
+      inputMessage = request->getParam(parameter_StartPulsos)->value();
+      EEPROM.writeUInt(ADDR_EEPROM_START, inputMessage.toInt());
+    }
+    else {
+      inputMessage = "No message sent";
+    }
+    Serial.println(inputMessage);
+    request->send(200, "text/text", inputMessage);
+  });
+  server.onNotFound(notFound);
+  server.begin();
+}
 
 
 void IRAM_ATTR mode_handleInterrupt(void* arg)
@@ -71,7 +184,7 @@ void IRAM_ATTR timeout_handler(void *para)
 {
   TIMERG0.int_clr_timers.t0 = 1;
 
-  if (pulse_num >= pulse_cnt){
+  if (1 >= pulse_cnt){
     if(gpio_get_level(pinPulse) == HIGH){
       gpio_set_level(pinPulse, LOW);
     }
@@ -93,20 +206,62 @@ void transmitTX(const char *dataTX, uint8_t size)
 }
 
 
-void generatePulse(int pulseHigh_ms)
+void generatePulse(int pulse_ms, int polarity)
 {
   timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-  timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, pulseHigh_ms*PULSE_PERIOD_TICKS);
+  timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, pulse_ms*PULSE_PERIOD_TICKS);
   
   pulse_cnt=0;
 
-  gpio_set_level(pinPulse, HIGH);
+  gpio_set_level(pinPulse, polarity);
   timer_start(TIMER_GROUP_0, TIMER_0);
 
-  while(pulse_cnt!=pulse_num);
+  while(pulse_cnt!=1);
 
   gpio_set_level(pinPulse, LOW);
   timer_pause(TIMER_GROUP_0, TIMER_0);
+}
+
+
+void generateFinitePWM()
+{
+  for(uint16_t it=0; it!= pulse_num; it++){
+    generatePulse(pulse_size_ms, HIGH);
+    generatePulse(pause_size_ms, LOW);
+  }
+}
+
+
+static void vTaskWdgServer( void *pvParameters )
+{
+  for( ;; ){
+    //printf("[INFO] WDG Server\r\n");
+    start_pulse = EEPROM.readUInt(ADDR_EEPROM_START);
+    if (start_pulse){
+      pulse_size_ms = EEPROM.readUInt(ADDR_EEPROM_PULSE);
+      pause_size_ms = EEPROM.readUInt(ADDR_EEPROM_PAUSE);
+      pulse_num = EEPROM.readUInt(ADDR_EEPROM_NUMPULSES);
+      generateFinitePWM();
+      EEPROM.put(ADDR_EEPROM_START, 0);
+    }
+    vTaskDelay(WDG_SERVER_TIME/portTICK_PERIOD_MS);
+  }
+  vTaskDelete(NULL);
+}
+
+
+
+void vTaskServer(void* pvParam)
+{
+  for(;;) {
+    wifiConnect();
+    startServer();
+    gpio_set_level(pinLED_STATUS_G, HIGH);
+    gpio_set_level(pinLED_STATUS_R, LOW);
+    xTaskCreatePinnedToCore(vTaskWdgServer, "Task Server Wfg", 5000, NULL, 1, &tHandler_ServerWdg, 0);
+    tHandler_Server = NULL;
+    vTaskDelete(NULL);
+  }
 }
 
 
@@ -117,7 +272,7 @@ static void vTaskManualPulse( void *pvParameters )
     printf("[INFO] Pulso Manual\r\n");
 
     xSemaphoreTake(xMutexPulse, portMAX_DELAY);
-    generatePulse(PULSE_MANUAL_MS);
+    generatePulse(PULSE_MANUAL_MS, HIGH);
     xSemaphoreGive( xMutexPulse );
   }
   vTaskDelete(NULL);
@@ -130,6 +285,7 @@ static void vTaskMode( void *pvParameters )
     xSemaphoreTake( sSemphrMode, portMAX_DELAY );
     if (!modeUSB){
       modeUSB = true;
+      pulse_num = 1;
       gpio_set_level(pinLED_STATUS_G, HIGH);
       gpio_set_level(pinLED_STATUS_R, LOW);
       gpio_set_level(pinLED_MODE_G, HIGH);
@@ -138,8 +294,15 @@ static void vTaskMode( void *pvParameters )
         vTaskResume(tHandler_KeepAlive);
       if(tHandler_AT != NULL)
         vTaskResume(tHandler_AT);
-      if(tHandler_ManualPulse != NULL)
-        vTaskResume(tHandler_ManualPulse);
+      //if(tHandler_ManualPulse != NULL)
+      //  vTaskResume(tHandler_ManualPulse);
+
+      if(tHandler_Server != NULL)
+        vTaskDelete(tHandler_Server);
+
+      if(tHandler_ServerWdg != NULL)
+        vTaskDelete(tHandler_ServerWdg);
+
       printf("[INFO] USB Mode (on)\r\n");
     }
     else{
@@ -147,14 +310,21 @@ static void vTaskMode( void *pvParameters )
       gpio_set_level(pinLED_STATUS_G, LOW);
       gpio_set_level(pinLED_STATUS_R, HIGH);
       gpio_set_level(pinLED_MODE_G, LOW);
-      gpio_set_level(pinLED_MODE_R, LOW);
+      gpio_set_level(pinLED_MODE_R, HIGH);
 
       vTaskSuspend(tHandler_KeepAlive);
       vTaskSuspend(tHandler_AT);
-      vTaskSuspend(tHandler_ManualPulse);
+      //vTaskSuspend(tHandler_ManualPulse);
       if(tHandler_Pulse != NULL)
         stopPulse(SILENT);
 
+
+      pulse_size_ms = EEPROM.readUInt(ADDR_EEPROM_PULSE);
+      pause_size_ms = EEPROM.readUInt(ADDR_EEPROM_PAUSE);
+      pulse_num = EEPROM.readUInt(ADDR_EEPROM_NUMPULSES);
+      start_pulse = EEPROM.readUInt(ADDR_EEPROM_START);
+
+      xTaskCreatePinnedToCore(vTaskServer, "Task Server", 5000, NULL, 1, &tHandler_Server, 0);
       printf("[INFO] USB Mode (off)\r\n");
     }
   }
@@ -171,7 +341,7 @@ void vTaskPulse(void* pvParam)
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_SEND);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
     
-    generatePulse(pulse_size_ms);
+    generatePulse(pulse_size_ms, HIGH);
     
     sprintf(msgPULSE, PATTERN_OK, pulse_pqseq, PULSE_END);
     transmitTX((const char *) msgPULSE, TX_SIZE_RESPONSE_OK);
@@ -254,7 +424,7 @@ void vTaskAT(void* pvParam)
         rxBytes = uart_read_bytes(UART_PORT, dataRX, 2, 100 / portTICK_PERIOD_MS);
         if (rxBytes > 0) {
           pulse_size_ms = (uint32_t)TO_UINT8(dataRX[0], dataRX[1]) * PULSE_RESOLUTION;
-          EEPROM.put(ADDR_EEPROM_PULSE, pulse_size_ms);
+          //EEPROM.put(ADDR_EEPROM_PULSE, pulse_size_ms);
           stateAT = stSEQ;
         }
         break;
@@ -425,7 +595,15 @@ void setup()
   gpio_set_level(pinPulse, LOW);
 
   pdseq = 0;
-  EEPROM.get(ADDR_EEPROM_PULSE, pulse_size_ms);
+  
+  if (!EEPROM.begin(32)) {
+    printf("[ERROR] Failed to initialise EEPROM\r\n");
+  }
+
+  EEPROM.put(ADDR_EEPROM_PULSE, 100);
+  EEPROM.put(ADDR_EEPROM_PAUSE, 100);
+  EEPROM.put(ADDR_EEPROM_NUMPULSES, 1);
+  EEPROM.put(ADDR_EEPROM_START, 0);
 
   app_main();
 }

@@ -14,7 +14,12 @@ typedef enum {
 #define TO_UINT8(A,B) (((TO_DECIMAL(A))*16) + (TO_DECIMAL(B)))
 
 
+const char* ssid = "IoTnet";
+const char* password = "darksecret";
+
+
 #define KEEP_ALIVE_TIME 2000
+#define WDG_SERVER_TIME 500
 
 
 #define UART_BAUDRATE 115200
@@ -39,7 +44,10 @@ typedef enum {
 #define NOTIFY true
 #define SILENT false
 
-#define ADDR_EEPROM_PULSE 0x0
+#define ADDR_EEPROM_PULSE     0x0
+#define ADDR_EEPROM_PAUSE     0x4
+#define ADDR_EEPROM_NUMPULSES 0x8
+#define ADDR_EEPROM_START     0xC
 
 #define PWM_CHANNEL 1
 #define LEDC_TIMER              LEDC_TIMER_0
