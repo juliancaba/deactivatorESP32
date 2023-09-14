@@ -18,8 +18,12 @@ const char* ssid = "IoTnet";
 const char* password = "darksecret";
 
 
-#define KEEP_ALIVE_TIME 2000
-#define WDG_SERVER_TIME 500
+#define KEEP_ALIVE_TIME      2000
+#define WDG_SERVER_TIME      500
+#define WIFI_KEEP_ALIVE_TIME 5000
+
+#define WIFI_NEW_CONNECTION false
+#define WIFI_RECONNECT      true
 
 
 #define UART_BAUDRATE 115200
@@ -56,6 +60,8 @@ const char* password = "darksecret";
 #define LEDC_DUTY_RES           LEDC_TIMER_16_BIT // Set duty resolution to 16 bits
 #define LEDC_DUTY               (32767) // Set duty to 50%. ((2 ** 16) - 1) * 50%
 #define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
+
+#define PULSE_CTRL_STEPS 1
 
 const char* PATTERN_KEEP_ALIVE="AT+K=%02X\r\n";
 const char* PATTERN_OK="AT+OK=%02X%02X\r\n";

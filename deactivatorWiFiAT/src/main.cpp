@@ -34,6 +34,7 @@ TaskHandle_t tHandler_Pulse = NULL;
 TaskHandle_t tHandler_ManualPulse = NULL;
 TaskHandle_t tHandler_Server = NULL;
 TaskHandle_t tHandler_ServerWdg = NULL;
+TaskHandle_t tHandler_WifiKeepAlive = NULL;
 
 
 AsyncWebServer server(80);
@@ -53,9 +54,10 @@ static uint16_t pause_size_ms;
 static uint8_t pulse_pqseq;
 static uint16_t pulse_num = 1;
 static uint16_t start_pulse = 0;
-static volatile uint16_t pulse_cnt;
+static volatile uint16_t pulse_ctrl_cnt;
 static enum {stIDLE, stPLUSE_SIZE, stSEQ, stEQUAL, stPDSEQ_ACK, stPQSEQ_ACK, stCR, stLF} stateAT;
 static tOperation operation = AT_NONE;
+static bool reconnect = WIFI_NEW_CONNECTION;
 
 void app_main(void);
 void stopPulse(bool notifyStop);
@@ -65,15 +67,26 @@ void vTaskPulse(void* pvParam);
 
 void wifiConnect()
 {
-  WiFi.begin(ssid, password);
-  
+  if(reconnect)
+    WiFi.reconnect();
+  else
+    WiFi.begin(ssid, password);
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    printf("Connecting to WiFi..\r\n");
+    if (reconnect)
+      printf("[INFO] Reconnecting to WiFi..\r\n");
+    else
+      printf("[INFO] Connecting to WiFi..\r\n");
   }
 
-  printf("Connected to the WiFi network\r\n");
-  printf("IP Address: %s\r\n", WiFi.localIP().toString());
+  printf("\tConnected to the WiFi network\r\n");
+  printf("\tIP Address: %s\r\n", WiFi.localIP().toString());
+
+  if(reconnect){
+    gpio_set_level(pinLED_STATUS_G, HIGH);
+    gpio_set_level(pinLED_STATUS_R, LOW);
+  }
 }
 
 
@@ -83,10 +96,10 @@ void wifiDisconnect()
   
   while (WiFi.status() != WL_DISCONNECTED) {
     delay(1000);
-    printf("Disconnecting to WiFi..\r\n");
+    printf("[INFO] Disconnecting to WiFi..\r\n");
   }
 
-  printf("Disonnected to the WiFi network\r\n");
+  printf("\t Disonnected to the WiFi network\r\n");
 }
 
 
@@ -184,14 +197,14 @@ void IRAM_ATTR timeout_handler(void *para)
 {
   TIMERG0.int_clr_timers.t0 = 1;
 
-  if (1 >= pulse_cnt){
+  if (PULSE_CTRL_STEPS >= pulse_ctrl_cnt){
     if(gpio_get_level(pinPulse) == HIGH){
       gpio_set_level(pinPulse, LOW);
     }
     else{
       gpio_set_level(pinPulse, HIGH);
     }
-    pulse_cnt++;
+    pulse_ctrl_cnt++;
     timer_set_alarm(TIMER_GROUP_0, TIMER_0, TIMER_ALARM_EN);
   }
   //TIMERG0.hw_timer[0].config.alarm_en = 1;
@@ -211,12 +224,12 @@ void generatePulse(int pulse_ms, int polarity)
   timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
   timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, pulse_ms*PULSE_PERIOD_TICKS);
   
-  pulse_cnt=0;
+  pulse_ctrl_cnt=0;
 
   gpio_set_level(pinPulse, polarity);
   timer_start(TIMER_GROUP_0, TIMER_0);
 
-  while(pulse_cnt!=1);
+  while(pulse_ctrl_cnt!=PULSE_CTRL_STEPS);
 
   gpio_set_level(pinPulse, LOW);
   timer_pause(TIMER_GROUP_0, TIMER_0);
@@ -250,6 +263,21 @@ static void vTaskWdgServer( void *pvParameters )
 }
 
 
+static void vTaskWifiKeepAlive( void *pvParameters )
+{
+  for( ;; ){
+    if (WiFi.status() != WL_CONNECTED){
+      gpio_set_level(pinLED_STATUS_G, LOW);
+      gpio_set_level(pinLED_STATUS_R, HIGH);
+      WiFi.disconnect();
+      reconnect = WIFI_RECONNECT;
+      wifiConnect();
+    }
+    vTaskDelay(WIFI_KEEP_ALIVE_TIME/portTICK_PERIOD_MS);
+  }
+  vTaskDelete(NULL);
+}
+
 
 void vTaskServer(void* pvParam)
 {
@@ -258,7 +286,8 @@ void vTaskServer(void* pvParam)
     startServer();
     gpio_set_level(pinLED_STATUS_G, HIGH);
     gpio_set_level(pinLED_STATUS_R, LOW);
-    xTaskCreatePinnedToCore(vTaskWdgServer, "Task Server Wfg", 5000, NULL, 1, &tHandler_ServerWdg, 0);
+    xTaskCreatePinnedToCore(vTaskWdgServer, "Task Server Wfg", 5000, NULL, 2, &tHandler_ServerWdg, 0);
+    xTaskCreatePinnedToCore(vTaskWifiKeepAlive, "Task WiFi Keep Alive", 5000, NULL, 1, &tHandler_WifiKeepAlive, 0);
     tHandler_Server = NULL;
     vTaskDelete(NULL);
   }
@@ -302,6 +331,14 @@ static void vTaskMode( void *pvParameters )
 
       if(tHandler_ServerWdg != NULL)
         vTaskDelete(tHandler_ServerWdg);
+
+      if(tHandler_WifiKeepAlive != NULL)
+        vTaskDelete(tHandler_WifiKeepAlive);
+
+      if (WiFi.status() == WL_CONNECTED){
+        WiFi.disconnect();
+        reconnect = WIFI_RECONNECT;
+      }
 
       printf("[INFO] USB Mode (on)\r\n");
     }
@@ -604,6 +641,9 @@ void setup()
   EEPROM.put(ADDR_EEPROM_PAUSE, 100);
   EEPROM.put(ADDR_EEPROM_NUMPULSES, 1);
   EEPROM.put(ADDR_EEPROM_START, 0);
+
+
+  reconnect = WIFI_NEW_CONNECTION;
 
   app_main();
 }
