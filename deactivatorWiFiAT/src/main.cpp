@@ -239,8 +239,10 @@ void generatePulse(int pulse_ms, int polarity)
 void generateFinitePWM()
 {
   for(uint16_t it=0; it!= pulse_num; it++){
+    xSemaphoreTake(xMutexPulse, portMAX_DELAY);
     generatePulse(pulse_size_ms, HIGH);
     generatePulse(pause_size_ms, LOW);
+    xSemaphoreGive(xMutexPulse);
   }
 }
 
