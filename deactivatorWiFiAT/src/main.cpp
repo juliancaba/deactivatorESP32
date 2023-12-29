@@ -8,6 +8,7 @@
 
 #include "driver/uart.h"
 #include "driver/timer.h"
+#include "driver/adc.h"
 
 #include "pinout.h"
 #include "config.h"
@@ -19,12 +20,13 @@
 #include "serverConfig.h"
 #include <WiFi.h>
 #include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+#include "ESPAsyncWebServer.h"
 
 
 
-QueueHandle_t sSemphrMode = NULL;
+//QueueHandle_t sSemphrMode = NULL;
 QueueHandle_t sSemphrPulse = NULL;
+QueueHandle_t sSemphrReact = NULL;
 QueueHandle_t xMutexTX = NULL;
 QueueHandle_t xMutexPulse = NULL;
 
@@ -32,13 +34,14 @@ TaskHandle_t tHandler_KeepAlive = NULL;
 TaskHandle_t tHandler_AT = NULL;
 TaskHandle_t tHandler_Pulse = NULL;
 TaskHandle_t tHandler_ManualPulse = NULL;
+TaskHandle_t tHandler_React = NULL;
 TaskHandle_t tHandler_Server = NULL;
 TaskHandle_t tHandler_ServerWdg = NULL;
 TaskHandle_t tHandler_WifiKeepAlive = NULL;
 
 
 AsyncWebServer server(80);
-static volatile bool modeUSB = false;
+//static volatile bool modeUSB = false;
 
 static uint8_t* dataRX = NULL;
 static char *msgPULSE = NULL;
@@ -177,13 +180,21 @@ void startServer()
 }
 
 
+void IRAM_ATTR react_handleInterrupt(void* arg)
+{
+  static portBASE_TYPE xHigherPriorityTaskWoken;
+  xHigherPriorityTaskWoken = pdFALSE;
+  xSemaphoreGiveFromISR( sSemphrReact, &xHigherPriorityTaskWoken );
+}
+
+/*
 void IRAM_ATTR mode_handleInterrupt(void* arg)
 {
   static portBASE_TYPE xHigherPriorityTaskWoken;
   xHigherPriorityTaskWoken = pdFALSE;
   xSemaphoreGiveFromISR( sSemphrMode, &xHigherPriorityTaskWoken );
 }
-
+*/
 
 void IRAM_ATTR pulse_handleInterrupt(void* arg)
 {
@@ -296,6 +307,20 @@ void vTaskServer(void* pvParam)
 }
 
 
+static void vTaskReact( void *pvParameters )
+{
+  for( ;; ){
+    xSemaphoreTake( sSemphrReact, portMAX_DELAY );
+    printf("[INFO] React\r\n");
+    if(gpio_get_level(pinLED_REACT))
+      gpio_set_level(pinLED_REACT, LOW);
+    else 
+      gpio_set_level(pinLED_REACT, HIGH);
+  }
+  vTaskDelete(NULL);
+}
+
+
 static void vTaskManualPulse( void *pvParameters )
 {
   for( ;; ){
@@ -309,7 +334,7 @@ static void vTaskManualPulse( void *pvParameters )
   vTaskDelete(NULL);
 }
 
-
+/*
 static void vTaskMode( void *pvParameters )
 {
   for( ;; ){
@@ -369,6 +394,7 @@ static void vTaskMode( void *pvParameters )
   }
   vTaskDelete(NULL);
 }
+*/
 
 
 void vTaskPulse(void* pvParam)
@@ -582,23 +608,32 @@ void setup()
 {
   gpio_set_direction(pinBUTTON_PULSE, GPIO_MODE_INPUT);
   gpio_pulldown_dis(pinBUTTON_PULSE);
+  gpio_pullup_en(pinBUTTON_PULSE);
   gpio_set_intr_type(pinBUTTON_PULSE, GPIO_INTR_POSEDGE);
 
-  gpio_set_direction(pinBUTTON_MODE, GPIO_MODE_INPUT);
-  gpio_pulldown_dis(pinBUTTON_MODE);
-  gpio_set_intr_type(pinBUTTON_MODE, GPIO_INTR_POSEDGE);
+  gpio_set_direction(pinJUMPER_MODE, GPIO_MODE_INPUT);
+  gpio_pulldown_en(pinJUMPER_MODE);
+  //gpio_set_intr_type(pinBUTTON_MODE, GPIO_INTR_POSEDGE);
+
+  gpio_set_direction(pinBUTTON_REACT, GPIO_MODE_INPUT);
+  gpio_pulldown_dis(pinBUTTON_REACT);
+  gpio_set_intr_type(pinBUTTON_REACT, GPIO_INTR_POSEDGE);
 
   gpio_install_isr_service(0);
   gpio_isr_handler_add(pinBUTTON_PULSE, pulse_handleInterrupt, (void*)pinBUTTON_PULSE);
-  gpio_isr_handler_add(pinBUTTON_MODE, mode_handleInterrupt, (void*)pinBUTTON_MODE);
+  //gpio_isr_handler_add(pinBUTTON_MODE, mode_handleInterrupt, (void*)pinBUTTON_MODE);
+  gpio_isr_handler_add(pinBUTTON_REACT, react_handleInterrupt, (void*)pinBUTTON_REACT);
 
   gpio_config_t io_conf = {};
   io_conf.intr_type = GPIO_INTR_DISABLE;
-  io_conf.mode = GPIO_MODE_OUTPUT;
-  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R) | (1ULL<<pinPulse));
+  io_conf.mode = GPIO_MODE_INPUT_OUTPUT;
+  io_conf.pin_bit_mask = ((1ULL<<pinLED_STATUS_B) | (1ULL<<pinLED_STATUS_G) | (1ULL<<pinLED_STATUS_R) | (1ULL<<pinLED_MODE_B) | (1ULL<<pinLED_MODE_G) | (1ULL<<pinLED_MODE_R) | (1ULL<<pinLED_REACT) | (1ULL<<pinPulse));
   io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
+
+  adc_set_data_width(ADC_UNIT_1, ADC_WIDTH_BIT_10);  
+  adc1_config_channel_atten(ADCchannelTemperature, ADC_ATTEN_DB_11);
  
   uart_config_t uart_config = {
         .baud_rate = UART_BAUDRATE,
@@ -627,10 +662,13 @@ void setup()
   timer_isr_register(TIMER_GROUP_0, TIMER_0, timeout_handler,
                        (void *) TIMER_0, ESP_INTR_FLAG_IRAM, NULL);
 
+  gpio_set_level(pinLED_STATUS_B, LOW);  
   gpio_set_level(pinLED_STATUS_G, LOW);  
   gpio_set_level(pinLED_STATUS_R, LOW);
+  gpio_set_level(pinLED_MODE_B, LOW);
   gpio_set_level(pinLED_MODE_G, LOW);
   gpio_set_level(pinLED_MODE_R, LOW);
+  gpio_set_level(pinLED_REACT, HIGH);
   gpio_set_level(pinPulse, LOW);
 
   pdseq = 0;
@@ -656,17 +694,26 @@ void app_main(void)
   if(xTaskGetSchedulerState()==taskSCHEDULER_RUNNING)
     printf("[INFO] Scheduler is running\n");
 
+/*
   vSemaphoreCreateBinary( sSemphrMode );
   if( sSemphrMode == NULL )
   {
     printf("[FAIL] Mode Semaphore has not been created\n");
     return;
   }
+*/
 
   vSemaphoreCreateBinary( sSemphrPulse );
   if( sSemphrPulse == NULL )
   {
     printf("[FAIL] Pulse Semaphore has not been created\n");
+    return;
+  }
+
+  vSemaphoreCreateBinary( sSemphrReact );
+  if( sSemphrReact == NULL )
+  {
+    printf("[FAIL] React Semaphore has not been created\n");
     return;
   }
 
@@ -685,10 +732,49 @@ void app_main(void)
     return;
   }
 
-  xTaskCreatePinnedToCore(vTaskMode, "Task Mode", 2500, NULL, 10, NULL, 0);
-  xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 5000, NULL, 1, &tHandler_ManualPulse, 0);
-  xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 2500, NULL, 2, &tHandler_KeepAlive, 0);
-  xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
+  //xTaskCreatePinnedToCore(vTaskMode, "Task Mode", 2500, NULL, 10, NULL, 0);
+  
+  if(gpio_get_level(pinJUMPER_MODE) == USB_MODE){
+    pulse_num = 1;
+    gpio_set_level(pinLED_STATUS_G, HIGH);
+    gpio_set_level(pinLED_STATUS_R, LOW);
+    gpio_set_level(pinLED_STATUS_B, LOW);
+    gpio_set_level(pinLED_MODE_G, HIGH);
+    gpio_set_level(pinLED_MODE_R, HIGH);
+    gpio_set_level(pinLED_MODE_B, HIGH);
+    xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 5000, NULL, 1, &tHandler_ManualPulse, 0);
+    xTaskCreatePinnedToCore(vTaskReact, "Task React", 5000, NULL, 1, &tHandler_React, 0);
+    xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 2500, NULL, 2, &tHandler_KeepAlive, 0);
+    xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
+
+    if (WiFi.status() == WL_CONNECTED){
+      WiFi.disconnect();
+      reconnect = WIFI_RECONNECT;
+    }
+
+    printf("[INFO] USB Mode (on)\r\n");
+  }
+  else{
+    gpio_set_level(pinLED_STATUS_G, LOW);
+    gpio_set_level(pinLED_STATUS_R, HIGH);
+    gpio_set_level(pinLED_STATUS_B, LOW);
+    gpio_set_level(pinLED_MODE_G, LOW);
+    gpio_set_level(pinLED_MODE_R, LOW);
+    gpio_set_level(pinLED_MODE_B, HIGH);
+
+    pulse_size_ms = EEPROM.readUInt(ADDR_EEPROM_PULSE);
+    pause_size_ms = EEPROM.readUInt(ADDR_EEPROM_PAUSE);
+    pulse_num = EEPROM.readUInt(ADDR_EEPROM_NUMPULSES);
+    start_pulse = EEPROM.readUInt(ADDR_EEPROM_START);
+
+    gpio_set_level(pinLED_REACT, LOW);
+    gpio_set_level(pinPulse, LOW);
+    timer_pause(TIMER_GROUP_0, TIMER_0);
+
+    xTaskCreatePinnedToCore(vTaskServer, "Task Server", 5000, NULL, 1, &tHandler_Server, 0);
+    printf("[INFO] USB Mode (off)\r\n");
+  }
+
 }
 
 
