@@ -2,7 +2,7 @@
 #define __CONFIG_H__
 
 
-#define USB_MODE LOW
+#define USB_MODE HIGH
 
 typedef enum {
     AT_NONE, 
@@ -16,7 +16,7 @@ typedef enum {
 #define TO_UINT8(A,B) (((TO_DECIMAL(A))*16) + (TO_DECIMAL(B)))
 
 
-const char* ssid = "IoTNet";
+const char* ssid = "IoTnet";
 const char* password = "darksecret";
 
 

@@ -734,6 +734,9 @@ void app_main(void)
 
   //xTaskCreatePinnedToCore(vTaskMode, "Task Mode", 2500, NULL, 10, NULL, 0);
   
+  xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 5000, NULL, 1, &tHandler_ManualPulse, 0);
+  xTaskCreatePinnedToCore(vTaskReact, "Task React", 5000, NULL, 1, &tHandler_React, 0);
+
   if(gpio_get_level(pinJUMPER_MODE) == USB_MODE){
     pulse_num = 1;
     gpio_set_level(pinLED_STATUS_G, HIGH);
@@ -742,8 +745,6 @@ void app_main(void)
     gpio_set_level(pinLED_MODE_G, HIGH);
     gpio_set_level(pinLED_MODE_R, HIGH);
     gpio_set_level(pinLED_MODE_B, HIGH);
-    xTaskCreatePinnedToCore(vTaskManualPulse, "Task Manual Pulse", 5000, NULL, 1, &tHandler_ManualPulse, 0);
-    xTaskCreatePinnedToCore(vTaskReact, "Task React", 5000, NULL, 1, &tHandler_React, 0);
     xTaskCreatePinnedToCore(vTaskKeepAlive, "Task KA", 2500, NULL, 2, &tHandler_KeepAlive, 0);
     xTaskCreatePinnedToCore(vTaskAT, "Task AT", 5000, NULL, 1, &tHandler_AT, 0);
 

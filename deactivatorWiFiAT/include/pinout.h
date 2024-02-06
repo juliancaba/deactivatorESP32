@@ -5,14 +5,14 @@
 // GPIO
 #define pinPulse         GPIO_NUM_14  // GPIO14 (17 - D7)
 #define pinJUMPER_MODE   GPIO_NUM_35  // GPI35  (11 - A2)
-#define pinLED_MODE_B    GPIO_NUM_4   // GPIO4  (24 - A1)
-#define pinLED_MODE_G    GPIO_NUM_32  // GPIO32 (12)
+#define pinLED_MODE_B    GPIO_NUM_2   // GPIO2  (22 - A0)
+#define pinLED_MODE_G    GPIO_NUM_4   // GPIO4  (24 - A1)
 #define pinLED_MODE_R    GPIO_NUM_25  // GPIO25 (14 - D3)
-#define pinBUTTON_PULSE  GPIO_NUM_39  // GPI39  (8 - A5)
+#define pinBUTTON_PULSE  GPIO_NUM_5   // GPIO05 (34 - D10)
 #define pinLED_STATUS_B  GPIO_NUM_27  // GPIO27 (16 - D6)
-#define pinLED_STATUS_G  GPIO_NUM_13  // GPIO13 (20 - D9)
+#define pinLED_STATUS_G  GPIO_NUM_12  // GPIO12 (18 - D8)
 #define pinLED_STATUS_R  GPIO_NUM_23  // GPIO23 (36 - D11)
-#define pinBUTTON_REACT  GPIO_NUM_36  // GPI36  (5 - A4)
+#define pinBUTTON_REACT  GPIO_NUM_18  // GPIO18 (35 - D13)
 #define pinLED_REACT     GPIO_NUM_19  // GPIO19 (38 - D12)
 
 
